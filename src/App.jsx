@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   ShoppingCart, Search, Heart, Lock, Plus, Minus, Trash2, Pencil, LogOut,
   Package, TrendingUp, Users, ClipboardList, Settings, ChevronLeft, Check,
-  X, BarChart3, Download, Store, KeyRound, AlertTriangle, Loader2
+  X, BarChart3, Download, Store, KeyRound, AlertTriangle, Loader2,
+  MessageCircle, Phone, Mail, MapPin, Send
 } from "lucide-react";
 import { db } from "./firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
@@ -13,15 +14,15 @@ import { doc, getDoc, setDoc } from "firebase/firestore";
 --------------------------------------------------------------- */
 
 const C = {
-  ink: "#0F1225",
-  surface: "#171B33",
-  surface2: "#20244A",
-  coral: "#FF4470",
-  teal: "#17D9C4",
-  gold: "#FFC24B",
-  paper: "#F4F2EC",
-  muted: "#9AA0C3",
-  line: "rgba(244,242,236,0.14)",
+  ink: "#FFF8F1",
+  surface: "#FFFFFF",
+  surface2: "#FFF1E4",
+  coral: "#FF3D71",
+  teal: "#00CFB4",
+  gold: "#FFAE00",
+  paper: "#1C1035",
+  muted: "#7A7699",
+  line: "rgba(28,16,53,0.10)",
 };
 
 const KEYS = {
@@ -29,7 +30,8 @@ const KEYS = {
   sellers: "sellers",     // [ {id,name,pin,active} ]
   sales: "sales",         // [ sale ]
   orders: "orders",       // [ order ]
-  config: "config",       // { adminPin, storeName, tagline }
+  config: "config",       // { adminPin, storeName, tagline, phone, email, address }
+  messages: "messages",   // [ { id, name, contact, message, date, status } ]
 };
 
 const COLLECTION = "comerzoid";
@@ -45,6 +47,18 @@ function computePrice(cost, marginPct) {
 }
 function computeCommission(price, commissionPct) {
   return Math.round((Number(price) || 0) * (Number(commissionPct) || 0) / 100);
+}
+// Calcula el precio final que ve el comprador, aplicando el mayor descuento entre:
+// - descuento manual que activó el admin (onSale + discountPct)
+// - descuento automático por poco stock (liquidación, cuando quedan 1-2 unidades)
+function getEffectiveDiscountPct(p) {
+  const manual = p.onSale ? Number(p.discountPct) || 0 : 0;
+  const autoClearance = p.stock > 0 && p.stock <= 2 ? 15 : 0;
+  return Math.max(manual, autoClearance);
+}
+function getDisplayPrice(p) {
+  const discount = getEffectiveDiscountPct(p);
+  return discount > 0 ? Math.round(p.price * (1 - discount / 100)) : p.price;
 }
 
 const DEFAULT_CATEGORIES = ["Belleza", "Hogar", "Tecnología", "Moda", "Bebés", "Mascotas"];
@@ -89,12 +103,15 @@ async function saveKey(key, value) {
 /* ---------------- root component ---------------- */
 export default function App() {
   const [loaded, setLoaded] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [sellers, setSellers] = useState([]);
   const [sales, setSales] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [config, setConfig] = useState({ adminPin: "1234", storeName: "COMERZOID", tagline: "Todo lo que buscas, en un solo lugar." });
+  const [config, setConfig] = useState({ adminPin: "1234", storeName: "COMERZOID", tagline: "Todo lo que buscas, en un solo lugar.", phone: "809-000-0000", email: "contacto@comerzoid.com", address: "Santiago de los Caballeros, República Dominicana" });
+  const [messages, setMessages] = useState([]);
 
   const [view, setView] = useState("store"); // store | cart | checkout | confirmed | sellerLogin | seller | adminLogin | admin
   const [session, setSession] = useState(null); // {role:'seller', sellerId} | {role:'admin'}
@@ -103,40 +120,58 @@ export default function App() {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    (async () => {
-      const cat = await loadKey(KEYS.catalog, null);
-      const sell = await loadKey(KEYS.sellers, null);
-      const sal = await loadKey(KEYS.sales, []);
-      const ord = await loadKey(KEYS.orders, []);
-      const cfg = await loadKey(KEYS.config, null);
+    let finished = false;
+    const timeoutId = setTimeout(() => {
+      if (!finished) setLoadTimedOut(true);
+    }, 10000); // si en 10 segundos no ha cargado, mostramos opción de reintentar
 
-      if (cat) {
-        setProducts(cat.products || []);
-        setCategories(cat.categories || DEFAULT_CATEGORIES);
-      } else {
-        const seeded = seedProducts();
-        setProducts(seeded);
-        setCategories(DEFAULT_CATEGORIES);
-        saveKey(KEYS.catalog, { products: seeded, categories: DEFAULT_CATEGORIES });
+    (async () => {
+      try {
+        const cat = await loadKey(KEYS.catalog, null);
+        const sell = await loadKey(KEYS.sellers, null);
+        const sal = await loadKey(KEYS.sales, []);
+        const ord = await loadKey(KEYS.orders, []);
+        const cfg = await loadKey(KEYS.config, null);
+        const msgs = await loadKey(KEYS.messages, []);
+
+        if (cat) {
+          setProducts(cat.products || []);
+          setCategories(cat.categories || DEFAULT_CATEGORIES);
+        } else {
+          const seeded = seedProducts();
+          setProducts(seeded);
+          setCategories(DEFAULT_CATEGORIES);
+          saveKey(KEYS.catalog, { products: seeded, categories: DEFAULT_CATEGORIES });
+        }
+        if (sell) {
+          setSellers(sell);
+        } else {
+          const seededSellers = [{ id: uid("sv"), name: "Vendedora Demo", pin: "1111", active: true }];
+          setSellers(seededSellers);
+          saveKey(KEYS.sellers, seededSellers);
+        }
+        setSales(sal);
+        setOrders(ord);
+        setMessages(msgs);
+        if (cfg) {
+          setConfig({ phone: "809-000-0000", email: "contacto@comerzoid.com", address: "Santiago de los Caballeros, República Dominicana", ...cfg });
+        } else {
+          const seededCfg = { adminPin: "1234", storeName: "COMERZOID", tagline: "Todo lo que buscas, en un solo lugar.", phone: "809-000-0000", email: "contacto@comerzoid.com", address: "Santiago de los Caballeros, República Dominicana" };
+          setConfig(seededCfg);
+          saveKey(KEYS.config, seededCfg);
+        }
+        finished = true;
+        clearTimeout(timeoutId);
+        setLoaded(true);
+      } catch (e) {
+        console.error("Error cargando la app", e);
+        finished = true;
+        clearTimeout(timeoutId);
+        setLoadError(true);
       }
-      if (sell) {
-        setSellers(sell);
-      } else {
-        const seededSellers = [{ id: uid("sv"), name: "Vendedora Demo", pin: "1111", active: true }];
-        setSellers(seededSellers);
-        saveKey(KEYS.sellers, seededSellers);
-      }
-      setSales(sal);
-      setOrders(ord);
-      if (cfg) {
-        setConfig(cfg);
-      } else {
-        const seededCfg = { adminPin: "1234", storeName: "COMERZOID", tagline: "Todo lo que buscas, en un solo lugar." };
-        setConfig(seededCfg);
-        saveKey(KEYS.config, seededCfg);
-      }
-      setLoaded(true);
     })();
+
+    return () => clearTimeout(timeoutId);
   }, []);
 
   function persistCatalog(nextProducts, nextCategories) {
@@ -162,6 +197,10 @@ export default function App() {
     setConfig(next);
     saveKey(KEYS.config, next);
   }
+  function persistMessages(next) {
+    setMessages(next);
+    saveKey(KEYS.messages, next);
+  }
 
   function showToast(msg) {
     setToast(msg);
@@ -183,10 +222,24 @@ export default function App() {
     setView("store");
   }
 
+  if (!loaded && (loadTimedOut || loadError)) {
+    return (
+      <div style={{ background: C.ink, color: C.paper, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "sans-serif", padding: 24, textAlign: "center" }}>
+        <AlertTriangle size={32} color={C.coral} style={{ marginBottom: 14 }} />
+        <p style={{ fontWeight: 700, fontSize: 17, marginBottom: 6 }}>La tienda está tardando más de lo normal</p>
+        <p style={{ color: C.muted, fontSize: 13.5, maxWidth: 340, marginBottom: 18 }}>
+          Puede ser tu conexión a internet o un problema temporal. Intenta de nuevo.
+        </p>
+        <button onClick={() => window.location.reload()} style={primaryBtn()}>Reintentar</button>
+      </div>
+    );
+  }
+
   if (!loaded) {
     return (
       <div style={{ background: C.ink, color: C.paper, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "sans-serif" }}>
-        <Loader2 className="animate-spin" style={{ marginRight: 10 }} /> Cargando COMERZOID…
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+        <Loader2 style={{ marginRight: 10, animation: "spin 1s linear infinite" }} /> Cargando COMERZOID…
       </div>
     );
   }
@@ -299,15 +352,26 @@ export default function App() {
             sellers={sellers}
             sales={sales}
             orders={orders}
+            messages={messages}
             config={config}
             persistCatalog={persistCatalog}
             persistSellers={persistSellers}
             persistOrders={persistOrders}
+            persistMessages={persistMessages}
             persistConfig={persistConfig}
             showToast={showToast}
           />
         )}
       </div>
+
+      <CompanyFooter config={config} />
+
+      <ContactWidget
+        onSubmit={(entry) => {
+          persistMessages([{ id: uid("msg"), date: new Date().toISOString(), status: "nuevo", ...entry }, ...messages]);
+          showToast("¡Mensaje enviado! Te responderemos pronto ✓");
+        }}
+      />
     </div>
   );
 }
@@ -315,7 +379,7 @@ export default function App() {
 /* ---------------- top bar ---------------- */
 function TopBar({ config, session, cartCount, onGoStore, onGoCart, onGoSeller, onGoAdmin, onLogout }) {
   return (
-    <div style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(15,18,37,0.92)", backdropFilter: "blur(10px)", borderBottom: `1px solid ${C.line}` }}>
+    <div style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(255,248,241,0.92)", backdropFilter: "blur(10px)", borderBottom: `1px solid ${C.line}` }}>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "14px 20px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <button onClick={onGoStore} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}>
           <span style={{ fontWeight: 800, fontSize: 20, color: C.paper }}>
@@ -378,6 +442,47 @@ function navBtnStyle(accent) {
   };
 }
 
+/* ---------------- banner de ofertas rotativo ---------------- */
+function PromoBanner({ offers }) {
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    if (offers.length < 2) return;
+    const t = setInterval(() => setIdx((i) => (i + 1) % offers.length), 4000);
+    return () => clearInterval(t);
+  }, [offers.length]);
+
+  if (offers.length === 0) return null;
+  const p = offers[idx % offers.length];
+
+  return (
+    <div style={{
+      marginTop: 20, borderRadius: 20, overflow: "hidden", position: "relative",
+      background: `linear-gradient(120deg, ${C.coral}, ${C.gold})`, color: "#fff",
+      display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 26px", gap: 16, flexWrap: "wrap",
+    }}>
+      <div>
+        <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", opacity: 0.9 }}>
+          🔥 Oferta especial
+        </span>
+        <p style={{ fontSize: "clamp(16px,2.4vw,22px)", fontWeight: 800, margin: "6px 0 0" }}>{p.name}</p>
+        <p style={{ fontSize: 15, marginTop: 6 }}>
+          <span style={{ fontWeight: 800 }}>{fmt(getDisplayPrice(p))}</span>{" "}
+          <span style={{ textDecoration: "line-through", opacity: 0.75 }}>{fmt(p.price)}</span>{" "}
+          <span style={{ background: "rgba(255,255,255,0.25)", padding: "3px 9px", borderRadius: 999, fontSize: 12.5, fontWeight: 800 }}>-{p.discountPct}%</span>
+        </p>
+      </div>
+      {offers.length > 1 && (
+        <div style={{ display: "flex", gap: 6 }}>
+          {offers.map((_, i) => (
+            <span key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: i === idx ? "#fff" : "rgba(255,255,255,0.4)" }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- storefront ---------------- */
 function StoreView({ config, products, categories, cart, setCart, showToast }) {
   const [tab, setTab] = useState("Todos");
@@ -399,13 +504,16 @@ function StoreView({ config, products, categories, cart, setCart, showToast }) {
         if (hit.qty >= p.stock) return prev;
         return prev.map((i) => (i.id === p.id ? { ...i, qty: i.qty + 1 } : i));
       }
-      return [...prev, { id: p.id, name: p.name, price: p.price, img: p.img, qty: 1 }];
+      return [...prev, { id: p.id, name: p.name, price: getDisplayPrice(p), img: p.img, qty: 1 }];
     });
     showToast("Agregado al carrito ✓");
   }
 
+  const offers = useMemo(() => products.filter((p) => p.onSale && p.discountPct > 0 && p.stock > 0), [products]);
+
   return (
     <div>
+      <PromoBanner offers={offers} />
       <div style={{ padding: "44px 0 30px" }}>
         <h1 style={{ fontSize: "clamp(28px,4.4vw,44px)", fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>
           {config.tagline}
@@ -447,7 +555,7 @@ function StoreView({ config, products, categories, cart, setCart, showToast }) {
           <div key={p.id} style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, overflow: "hidden", display: "flex", flexDirection: "column" }}>
             <div style={{ aspectRatio: "1/1", backgroundImage: `url(${p.img})`, backgroundSize: "cover", backgroundPosition: "center", position: "relative" }}>
               {p.stock <= 0 && (
-                <div style={{ position: "absolute", inset: 0, background: "rgba(15,18,37,0.75)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13 }}>
+                <div style={{ position: "absolute", inset: 0, background: "rgba(28,16,53,0.68)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13 }}>
                   Agotado
                 </div>
               )}
@@ -456,11 +564,23 @@ function StoreView({ config, products, categories, cart, setCart, showToast }) {
                   Últimas {p.stock}
                 </span>
               )}
+              {p.onSale && p.discountPct > 0 && p.stock > 0 && (
+                <span style={{ position: "absolute", top: 10, right: 10, background: `linear-gradient(135deg, ${C.coral}, ${C.gold})`, color: "#fff", fontSize: 11, fontWeight: 800, padding: "4px 9px", borderRadius: 999 }}>
+                  -{p.discountPct}% OFERTA
+                </span>
+              )}
             </div>
             <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
               <span style={{ fontSize: 11, color: C.teal, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{p.category}</span>
               <span style={{ fontSize: 14.5, fontWeight: 600, lineHeight: 1.35 }}>{p.name}</span>
-              <span style={{ fontSize: 17, fontWeight: 800, marginTop: "auto" }}>{fmt(p.price)}</span>
+              {p.onSale && p.discountPct > 0 ? (
+                <span style={{ marginTop: "auto", display: "flex", alignItems: "baseline", gap: 8 }}>
+                  <span style={{ fontSize: 17, fontWeight: 800, color: C.coral }}>{fmt(getDisplayPrice(p))}</span>
+                  <span style={{ fontSize: 13, color: C.muted, textDecoration: "line-through" }}>{fmt(p.price)}</span>
+                </span>
+              ) : (
+                <span style={{ fontSize: 17, fontWeight: 800, marginTop: "auto" }}>{fmt(p.price)}</span>
+              )}
               <button
                 onClick={() => addToCart(p)}
                 disabled={p.stock <= 0}
@@ -543,13 +663,104 @@ function qtyBtn() {
   return { width: 26, height: 26, borderRadius: "50%", border: `1px solid ${C.line}`, background: C.surface2, color: C.paper, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" };
 }
 function primaryBtn(extra) {
-  return { background: C.coral, color: "#fff", border: "none", borderRadius: 999, padding: "14px 26px", fontWeight: 700, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(255,68,112,0.3)", ...extra };
+  return { background: C.coral, color: "#fff", border: "none", borderRadius: 999, padding: "14px 26px", fontWeight: 700, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(255,61,113,0.28)", ...extra };
 }
 function BackLink({ onClick, label }) {
   return (
     <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: C.muted, fontSize: 13, cursor: "pointer" }}>
       <ChevronLeft size={15} /> {label}
     </button>
+  );
+}
+
+/* ---------------- footer con info de la empresa ---------------- */
+function CompanyFooter({ config }) {
+  return (
+    <footer style={{ borderTop: `1px solid ${C.line}`, marginTop: 40, padding: "36px 20px 90px", background: C.surface2 }}>
+      <div style={{ maxWidth: 1180, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 26 }}>
+        <div>
+          <span style={{ fontWeight: 800, fontSize: 18, color: C.paper }}>
+            {config.storeName}<span style={{ color: C.coral }}>.</span>
+          </span>
+          <p style={{ color: C.muted, fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>{config.tagline}</p>
+        </div>
+        <div>
+          <h4 style={{ fontSize: 13, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em", color: C.paper, marginBottom: 12 }}>Contáctanos</h4>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13.5, color: C.muted }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Phone size={14} color={C.teal} /> {config.phone}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Mail size={14} color={C.teal} /> {config.email}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}><MapPin size={14} color={C.teal} /> {config.address}</span>
+          </div>
+        </div>
+        <div>
+          <h4 style={{ fontSize: 13, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em", color: C.paper, marginBottom: 12 }}>Entregas y pago</h4>
+          <p style={{ color: C.muted, fontSize: 13.5, lineHeight: 1.6 }}>
+            Entregas en Santiago de los Caballeros.<br />Pago contra entrega, en efectivo.
+          </p>
+        </div>
+      </div>
+      <p style={{ textAlign: "center", color: C.muted, fontSize: 12, marginTop: 28 }}>
+        © {new Date().getFullYear()} {config.storeName}. Todos los derechos reservados.
+      </p>
+    </footer>
+  );
+}
+
+/* ---------------- widget de contacto flotante ---------------- */
+function ContactWidget({ onSubmit }) {
+  const [open, setOpen] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [form, setForm] = useState({ name: "", contact: "", message: "" });
+
+  function submit(e) {
+    e.preventDefault();
+    if (!form.name || !form.contact || !form.message) return;
+    onSubmit(form);
+    setSent(true);
+    setTimeout(() => {
+      setForm({ name: "", contact: "", message: "" });
+      setSent(false);
+      setOpen(false);
+    }, 1600);
+  }
+
+  return (
+    <div style={{ position: "fixed", bottom: 22, right: 22, zIndex: 90 }}>
+      {open && (
+        <div style={{ width: 300, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, boxShadow: "0 16px 44px rgba(28,16,53,0.22)", padding: 18, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h4 style={{ fontSize: 15, fontWeight: 800, color: C.paper, margin: 0 }}>¿Tienes una pregunta?</h4>
+            <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={16} /></button>
+          </div>
+          {sent ? (
+            <div style={{ textAlign: "center", padding: "18px 0" }}>
+              <Check color={C.teal} size={26} />
+              <p style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>¡Enviado! Te contactaremos pronto.</p>
+            </div>
+          ) : (
+            <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input required style={inputStyle()} placeholder="Tu nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <input required style={inputStyle()} placeholder="Teléfono o correo" value={form.contact} onChange={(e) => setForm({ ...form, contact: e.target.value })} />
+              <textarea required style={{ ...inputStyle(), minHeight: 70 }} placeholder="Escribe tu pregunta..." value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} />
+              <button type="submit" style={{ ...primaryBtn(), display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px" }}>
+                <Send size={14} /> Enviar
+              </button>
+            </form>
+          )}
+        </div>
+      )}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: 58, height: 58, borderRadius: "50%", border: "none", cursor: "pointer",
+          background: `linear-gradient(135deg, ${C.coral}, ${C.gold})`, color: "#fff",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 10px 28px rgba(255,61,113,0.4)", marginLeft: "auto",
+        }}
+      >
+        {open ? <X size={22} /> : <MessageCircle size={24} />}
+      </button>
+    </div>
   );
 }
 
@@ -581,7 +792,7 @@ function CheckoutView({ cart, products, onBack, onConfirm }) {
       <h2 style={{ fontSize: 26, fontWeight: 800, margin: "16px 0 6px" }}>Finalizar pedido</h2>
       <p style={{ color: C.muted, fontSize: 13.5, marginBottom: 22 }}>Total a pagar: <strong style={{ color: C.paper }}>{fmt(total)}</strong></p>
 
-      <div style={{ background: "rgba(23,217,196,0.1)", border: `1px solid ${C.teal}`, borderRadius: 12, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: C.paper }}>
+      <div style={{ background: "rgba(0,207,180,0.12)", border: `1px solid ${C.teal}`, borderRadius: 12, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: C.paper }}>
         Por ahora solo hacemos entregas en <strong>Santiago de los Caballeros</strong>, con <strong>pago contra entrega</strong>.
       </div>
 
@@ -599,7 +810,7 @@ function CheckoutView({ cart, products, onBack, onConfirm }) {
           <input style={inputStyle()} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Calle, número, referencia" />
         </Field>
         <Field label="Método de pago">
-          <div style={{ padding: "12px 14px", borderRadius: 12, border: `1.5px solid ${C.coral}`, background: "rgba(255,68,112,0.12)", color: C.paper, fontWeight: 700, fontSize: 13.5 }}>
+          <div style={{ padding: "12px 14px", borderRadius: 12, border: `1.5px solid ${C.coral}`, background: "rgba(255,61,113,0.12)", color: C.paper, fontWeight: 700, fontSize: 13.5 }}>
             Contra entrega (pagas en efectivo cuando recibes tu pedido)
           </div>
         </Field>
@@ -633,7 +844,7 @@ function inputStyle() {
 function OrderConfirmed({ order, onBackToStore }) {
   return (
     <div style={{ padding: "70px 0", textAlign: "center", maxWidth: 460, margin: "0 auto" }}>
-      <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(23,217,196,0.15)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px" }}>
+      <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(0,207,180,0.18)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px" }}>
         <Check color={C.teal} size={28} />
       </div>
       <h2 style={{ fontSize: 24, fontWeight: 800 }}>¡Pedido recibido!</h2>
@@ -729,7 +940,8 @@ function SellerPanel({ seller, products, sales, onRegisterSale }) {
   useEffect(() => {
     if (pin.length === 4) {
       if (pin === seller.pin) {
-        const commission = computeCommission(product.price, product.commissionPct);
+        const salePrice = getDisplayPrice(product);
+        const commission = computeCommission(salePrice, product.commissionPct);
         onRegisterSale({
           id: uid("sale"),
           date: new Date().toISOString(),
@@ -739,11 +951,11 @@ function SellerPanel({ seller, products, sales, onRegisterSale }) {
           productName: product.name,
           category: product.category,
           qty: Number(qty),
-          price: product.price,
+          price: salePrice,
           cost: product.cost,
           commissionPct: product.commissionPct,
           commission,
-          profit: product.price - product.cost - commission,
+          profit: salePrice - product.cost - commission,
           customerName: customerName || "Cliente en tienda",
           paymentMethod,
         });
@@ -778,7 +990,7 @@ function SellerPanel({ seller, products, sales, onRegisterSale }) {
               <select style={inputStyle()} value={productId} onChange={(e) => { setProductId(e.target.value); setQty(1); }} required>
                 <option value="">Selecciona un producto</option>
                 {products.filter((p) => p.stock > 0).map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} — {fmt(p.price)} ({p.stock} disp.)</option>
+                  <option key={p.id} value={p.id}>{p.name} — {fmt(getDisplayPrice(p))}{p.onSale && p.discountPct > 0 ? " (oferta)" : ""} ({p.stock} disp.)</option>
                 ))}
               </select>
             </Field>
@@ -799,7 +1011,8 @@ function SellerPanel({ seller, products, sales, onRegisterSale }) {
             </Field>
             {product && (
               <p style={{ fontSize: 13, color: C.muted }}>
-                Total: <strong style={{ color: C.paper }}>{fmt(product.price * qty)}</strong>
+                Total: <strong style={{ color: C.paper }}>{fmt(getDisplayPrice(product) * qty)}</strong>
+                {product.onSale && product.discountPct > 0 && <span style={{ color: C.coral, fontWeight: 700 }}> (Oferta -{product.discountPct}%)</span>}
               </p>
             )}
             <button type="submit" disabled={!product} style={{ ...primaryBtn(), opacity: product ? 1 : 0.5, cursor: product ? "pointer" : "not-allowed" }}>
@@ -895,8 +1108,10 @@ function AdminLogin({ adminPin, onSuccess }) {
 }
 
 /* ---------------- admin panel ---------------- */
-function AdminPanel({ products, categories, sellers, sales, orders, config, persistCatalog, persistSellers, persistOrders, persistConfig, showToast }) {
+function AdminPanel({ products, categories, sellers, sales, orders, messages, config, persistCatalog, persistSellers, persistOrders, persistMessages, persistConfig, showToast }) {
   const [tab, setTab] = useState("dashboard");
+
+  const newMessages = messages.filter((m) => m.status === "nuevo").length;
 
   const tabs = [
     ["dashboard", "Dashboard", <BarChart3 size={15} />],
@@ -904,6 +1119,7 @@ function AdminPanel({ products, categories, sellers, sales, orders, config, pers
     ["categories", "Categorías", <ClipboardList size={15} />],
     ["sellers", "Vendedores", <Users size={15} />],
     ["orders", "Pedidos", <ShoppingCart size={15} />],
+    ["messages", `Mensajes${newMessages > 0 ? ` (${newMessages})` : ""}`, <MessageCircle size={15} />],
     ["reports", "Reportes", <TrendingUp size={15} />],
     ["settings", "Configuración", <Settings size={15} />],
   ];
@@ -932,6 +1148,7 @@ function AdminPanel({ products, categories, sellers, sales, orders, config, pers
       {tab === "categories" && <AdminCategories categories={categories} products={products} persistCatalog={persistCatalog} showToast={showToast} />}
       {tab === "sellers" && <AdminSellers sellers={sellers} sales={sales} persistSellers={persistSellers} showToast={showToast} />}
       {tab === "orders" && <AdminOrders orders={orders} persistOrders={persistOrders} showToast={showToast} />}
+      {tab === "messages" && <AdminMessages messages={messages} persistMessages={persistMessages} showToast={showToast} />}
       {tab === "reports" && <AdminReports sales={sales} orders={orders} sellers={sellers} categories={categories} />}
       {tab === "settings" && <AdminSettings config={config} persistConfig={persistConfig} showToast={showToast} />}
     </div>
@@ -989,7 +1206,7 @@ function AdminDashboard({ products, sales, orders }) {
   );
 }
 
-const emptyProductForm = { name: "", category: "", cost: "", marginPct: "40", commissionPct: "8", stock: "", img: "", description: "" };
+const emptyProductForm = { name: "", category: "", cost: "", marginPct: "40", commissionPct: "8", stock: "", img: "", description: "", onSale: false, discountPct: "0" };
 
 function AdminProducts({ products, categories, persistCatalog, showToast }) {
   const [editing, setEditing] = useState(null); // product id or 'new'
@@ -1000,7 +1217,7 @@ function AdminProducts({ products, categories, persistCatalog, showToast }) {
     setEditing("new");
   }
   function startEdit(p) {
-    setForm({ ...p, cost: String(p.cost), marginPct: String(p.marginPct), commissionPct: String(p.commissionPct), stock: String(p.stock) });
+    setForm({ ...p, cost: String(p.cost), marginPct: String(p.marginPct), commissionPct: String(p.commissionPct), stock: String(p.stock), discountPct: String(p.discountPct || 0), onSale: !!p.onSale });
     setEditing(p.id);
   }
   function save(e) {
@@ -1009,7 +1226,7 @@ function AdminProducts({ products, categories, persistCatalog, showToast }) {
     const payload = {
       name: form.name, category: form.category, cost: Number(form.cost), marginPct: Number(form.marginPct),
       commissionPct: Number(form.commissionPct), stock: Number(form.stock), img: form.img || "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&q=80",
-      description: form.description, price,
+      description: form.description, price, onSale: !!form.onSale, discountPct: Number(form.discountPct) || 0,
     };
     let next;
     if (editing === "new") {
@@ -1053,8 +1270,28 @@ function AdminProducts({ products, categories, persistCatalog, showToast }) {
           <Field label="URL de imagen"><input style={inputStyle()} value={form.img} onChange={(e) => setForm({ ...form, img: e.target.value })} placeholder="https://..." /></Field>
           <Field label="Descripción (opcional)"><input style={inputStyle()} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
 
+          <div style={{ gridColumn: "1 / -1", border: `1.5px solid ${form.onSale ? C.coral : C.line}`, borderRadius: 12, padding: 14, background: form.onSale ? "rgba(255,61,113,0.06)" : "transparent" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.onSale} onChange={(e) => setForm({ ...form, onSale: e.target.checked })} />
+              🔥 Poner este producto en oferta
+            </label>
+            {form.onSale && (
+              <div style={{ marginTop: 10 }}>
+                <Field label="Descuento (%)">
+                  <input type="number" min="1" max="90" style={inputStyle()} value={form.discountPct} onChange={(e) => setForm({ ...form, discountPct: e.target.value })} />
+                </Field>
+                <p style={{ fontSize: 12.5, color: C.muted, marginTop: 8 }}>
+                  Aparecerá con etiqueta de oferta y en el banner destacado de la tienda automáticamente.
+                </p>
+              </div>
+            )}
+          </div>
+
           <div style={{ gridColumn: "1 / -1", background: C.surface2, borderRadius: 10, padding: 14, fontSize: 13, display: "flex", gap: 24, flexWrap: "wrap" }}>
             <span>Precio de venta: <strong style={{ color: C.paper }}>{fmt(previewPrice)}</strong></span>
+            {form.onSale && Number(form.discountPct) > 0 && (
+              <span>Precio en oferta: <strong style={{ color: C.coral }}>{fmt(Math.round(previewPrice * (1 - Number(form.discountPct) / 100)))}</strong></span>
+            )}
             <span>Comisión vendedor: <strong style={{ color: C.gold }}>{fmt(previewCommission)}</strong></span>
             <span>Ganancia neta: <strong style={{ color: C.teal }}>{fmt(previewProfit)}</strong></span>
           </div>
@@ -1066,7 +1303,7 @@ function AdminProducts({ products, categories, persistCatalog, showToast }) {
         </form>
       )}
 
-      <TableShell headers={["Producto", "Categoría", "Costo", "Precio", "Comisión", "Ganancia", "Stock", ""]}>
+      <TableShell headers={["Producto", "Categoría", "Costo", "Precio", "Oferta", "Comisión", "Ganancia", "Stock", ""]}>
         {products.map((p) => {
           const commission = computeCommission(p.price, p.commissionPct);
           const profit = p.price - p.cost - commission;
@@ -1076,6 +1313,13 @@ function AdminProducts({ products, categories, persistCatalog, showToast }) {
               <Td>{p.category}</Td>
               <Td>{fmt(p.cost)}</Td>
               <Td style={{ fontWeight: 700 }}>{fmt(p.price)}</Td>
+              <Td>
+                {p.onSale && p.discountPct > 0 ? (
+                  <span style={{ fontSize: 11.5, fontWeight: 800, color: C.coral }}>-{p.discountPct}% ({fmt(getDisplayPrice(p))})</span>
+                ) : (
+                  <span style={{ fontSize: 12, color: C.muted }}>—</span>
+                )}
+              </Td>
               <Td style={{ color: C.gold }}>{fmt(commission)}</Td>
               <Td style={{ color: C.teal }}>{fmt(profit)}</Td>
               <Td style={{ color: p.stock <= 3 ? C.coral : C.paper }}>{p.stock}</Td>
@@ -1217,6 +1461,45 @@ function AdminOrders({ orders, persistOrders, showToast }) {
   );
 }
 
+function AdminMessages({ messages, persistMessages, showToast }) {
+  function markRead(id) {
+    persistMessages(messages.map((m) => (m.id === id ? { ...m, status: "atendido" } : m)));
+  }
+  function remove(id) {
+    persistMessages(messages.filter((m) => m.id !== id));
+    showToast("Mensaje eliminado");
+  }
+  const sorted = [...messages].sort((a, b) => new Date(b.date) - new Date(a.date));
+  return (
+    <div>
+      <p style={{ color: C.muted, fontSize: 13.5, marginBottom: 16 }}>Consultas enviadas desde el chat de la tienda.</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {sorted.map((m) => (
+          <div key={m.id} style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <p style={{ fontWeight: 700, margin: 0 }}>{m.name} <span style={{ color: C.muted, fontWeight: 400, fontSize: 12.5 }}>· {m.contact}</span></p>
+                <p style={{ color: C.muted, fontSize: 12, margin: "2px 0 0" }}>{new Date(m.date).toLocaleString("es-DO")}</p>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 800, padding: "4px 10px", borderRadius: 999, background: m.status === "nuevo" ? "rgba(255,61,113,0.12)" : "rgba(0,207,180,0.12)", color: m.status === "nuevo" ? C.coral : C.teal }}>
+                {m.status === "nuevo" ? "Nuevo" : "Atendido"}
+              </span>
+            </div>
+            <p style={{ fontSize: 13.5, margin: "10px 0 0", color: C.paper }}>{m.message}</p>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              {m.status === "nuevo" && (
+                <button onClick={() => markRead(m.id)} style={navBtnStyle(C.teal)}><Check size={13} /> Marcar atendido</button>
+              )}
+              <button onClick={() => remove(m.id)} style={navBtnStyle()}><Trash2 size={13} /> Eliminar</button>
+            </div>
+          </div>
+        ))}
+        {sorted.length === 0 && <p style={{ color: C.muted, fontSize: 13.5 }}>Aún no has recibido mensajes.</p>}
+      </div>
+    </div>
+  );
+}
+
 function AdminReports({ sales, orders, sellers, categories }) {
   const [sellerFilter, setSellerFilter] = useState("all");
   const [catFilter, setCatFilter] = useState("all");
@@ -1318,6 +1601,9 @@ function AdminSettings({ config, persistConfig, showToast }) {
     <form onSubmit={save} style={{ maxWidth: 420, display: "flex", flexDirection: "column", gap: 14 }}>
       <Field label="Nombre de la tienda"><input style={inputStyle()} value={form.storeName} onChange={(e) => setForm({ ...form, storeName: e.target.value })} /></Field>
       <Field label="Eslogan"><input style={inputStyle()} value={form.tagline} onChange={(e) => setForm({ ...form, tagline: e.target.value })} /></Field>
+      <Field label="Teléfono de contacto"><input style={inputStyle()} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+      <Field label="Correo de contacto"><input style={inputStyle()} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
+      <Field label="Dirección"><input style={inputStyle()} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Field>
       <Field label="Cambiar PIN de administrador (dejar vacío para no cambiar)">
         <input style={inputStyle()} value={newPin} onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="Nuevo PIN de 4 dígitos" />
       </Field>
