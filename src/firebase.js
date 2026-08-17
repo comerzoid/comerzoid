@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDUDXI_ftVJRLxFzsXDgm3xOB00b1PkA64",
@@ -12,4 +12,9 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+// experimentalAutoDetectLongPolling evita que la conexión se quede "colgada"
+// en redes o navegadores que bloquean el método de conexión normal de Firestore.
+export const db = initializeFirestore(app, {
+  experimentalAutoDetectLongPolling: true,
+  useFetchStreams: false,
+});
