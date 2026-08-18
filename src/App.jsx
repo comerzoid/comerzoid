@@ -3,7 +3,7 @@ import {
   ShoppingCart, Search, Heart, Lock, Plus, Minus, Trash2, Pencil, LogOut,
   Package, TrendingUp, Users, ClipboardList, Settings, ChevronLeft, Check,
   X, BarChart3, Download, Store, KeyRound, AlertTriangle, Loader2,
-  MessageCircle, Phone, Mail, MapPin, Send
+  MessageCircle, Phone, Mail, MapPin, Send, Smartphone
 } from "lucide-react";
 import { db } from "./firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
@@ -123,16 +123,20 @@ export default function App() {
     let finished = false;
     const timeoutId = setTimeout(() => {
       if (!finished) setLoadTimedOut(true);
-    }, 10000); // si en 10 segundos no ha cargado, mostramos opción de reintentar
+    }, 18000); // margen más amplio: da tiempo real a conexiones lentas antes de rendirse
 
     (async () => {
       try {
-        const cat = await loadKey(KEYS.catalog, null);
-        const sell = await loadKey(KEYS.sellers, null);
-        const sal = await loadKey(KEYS.sales, []);
-        const ord = await loadKey(KEYS.orders, []);
-        const cfg = await loadKey(KEYS.config, null);
-        const msgs = await loadKey(KEYS.messages, []);
+        // Cargamos todo AL MISMO TIEMPO (en paralelo), no uno por uno,
+        // así una conexión lenta no hace que las esperas se acumulen.
+        const [cat, sell, sal, ord, cfg, msgs] = await Promise.all([
+          loadKey(KEYS.catalog, null),
+          loadKey(KEYS.sellers, null),
+          loadKey(KEYS.sales, []),
+          loadKey(KEYS.orders, []),
+          loadKey(KEYS.config, null),
+          loadKey(KEYS.messages, []),
+        ]);
 
         if (cat) {
           setProducts(cat.products || []);
@@ -378,6 +382,23 @@ export default function App() {
 
 /* ---------------- top bar ---------------- */
 function TopBar({ config, session, cartCount, onGoStore, onGoCart, onGoSeller, onGoAdmin, onLogout }) {
+  const [installPrompt, setInstallPrompt] = useState(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  async function handleInstall() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(255,248,241,0.92)", backdropFilter: "blur(10px)", borderBottom: `1px solid ${C.line}` }}>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "14px 20px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
@@ -389,6 +410,12 @@ function TopBar({ config, session, cartCount, onGoStore, onGoCart, onGoSeller, o
         </button>
 
         <div style={{ flex: 1 }} />
+
+        {installPrompt && (
+          <button onClick={handleInstall} style={{ ...navBtnStyle(), background: `linear-gradient(135deg, ${C.coral}, ${C.gold})`, color: "#fff", border: "none" }}>
+            <Smartphone size={15} /> Instalar app
+          </button>
+        )}
 
         <button onClick={onGoStore} style={navBtnStyle()}>
           <Store size={15} /> Tienda
